@@ -1,0 +1,39 @@
+# Virtual environment
+venv/
+extractor-env/
+env/
+
+# Environment variables — never commit credentials
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Temp files created by pipeline
+/tmp/
+*.tmp
+
+# Lock file is committed — requirements.txt is source of truth
+# requirements.lock  ← keep this committed
