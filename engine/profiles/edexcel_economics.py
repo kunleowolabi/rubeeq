@@ -54,18 +54,33 @@ class EdexcelEconomicsProfile(ExamProfile):
     # ── Stage 1: Paper Metadata ───────────────────────────────────────────────
 
     def metadata_prompt(self, text: str) -> str:
-        return f"""You are extracting structured metadata from a Pearson Edexcel exam paper PDF.
+        char  = self.get_characterisation()
+        hints = ""
+        if char:
+            hints = f"""
+Prior characterisation of this paper:
+- Exam board : {char.get('exam_board', 'Pearson Edexcel')}
+- Subject    : {char.get('subject', 'Economics')}
+- Level      : {char.get('level', 'A Level')}
+- Year       : {char.get('year', 'unknown')}
+- Paper code : {char.get('paper_code', 'unknown')}
+- Format     : {char.get('question_format', 'unknown')}
+- Notes      : {char.get('notes', 'none')}
+Use this to fill gaps where the text is ambiguous.
+"""
 
+        return f"""You are extracting structured metadata from a Pearson Edexcel exam paper PDF.
+{hints}
 Extract the metadata and return a single JSON object with exactly these fields:
 {{
-  "paper_code": "e.g. 9EC0/03",
-  "exam_board": "e.g. Pearson Edexcel",
-  "subject": "e.g. Economics A",
-  "level": "e.g. A Level",
-  "year": 2024,
-  "exam_date": "YYYY-MM-DD",
-  "total_marks": 100,
-  "time_allowed_minutes": 120,
+  "paper_code":             "e.g. 9EC0/03",
+  "exam_board":             "e.g. Pearson Edexcel",
+  "subject":                "e.g. Economics A",
+  "level":                  "e.g. A Level",
+  "year":                   2024,
+  "exam_date":              "YYYY-MM-DD",
+  "total_marks":            100,
+  "time_allowed_minutes":   120,
   "sections": [
     {{"name": "A", "marks": 50}},
     {{"name": "B", "marks": 50}}
@@ -73,9 +88,8 @@ Extract the metadata and return a single JSON object with exactly these fields:
 }}
 
 Rules:
-- sections: look for explicit section breakdowns in the instructions.
-  Default to [{{"name": "A", "marks": <total_marks>}}] if not found.
-- exam_date: convert written date (e.g. "Friday 7 June 2024") to ISO format YYYY-MM-DD.
+- sections: look for explicit section breakdowns. Default to [{{"name": "A", "marks": <total_marks>}}] if not found.
+- exam_date: convert written date e.g. "Friday 7 June 2024" to YYYY-MM-DD.
 - time_allowed_minutes: convert "X hours" to minutes.
 - level: use "A Level" for GCE Advanced, "AS Level" for GCE AS.
 - Return ONLY the JSON object. No explanation, no markdown, no extra text.
@@ -87,22 +101,27 @@ PDF TEXT:
     # ── Stage 2: Question Discovery ───────────────────────────────────────────
 
     def discover_questions_prompt(self, text: str) -> str:
+        char     = self.get_characterisation()
+        sections = char.get("sections", [])
+        notes    = char.get("notes", "")
+        hints    = f"Sections detected: {sections}. {notes}" if char else ""
+
         return f"""You are reading a Pearson Edexcel A Level Economics exam paper.
+{hints}
 
 List every question in the paper. Return a JSON array where each element has exactly these fields:
 {{
-  "simple_id": "1a",
-  "section": "A",
-  "total_marks": 5,
+  "simple_id":     "1a",
+  "section":       "A",
+  "total_marks":   5,
   "marking_style": "points_based"
 }}
 
-marking_style rules:
-- 5 mark questions  -> "points_based"
-- 8 mark questions  -> "points_based"
-- 12 mark questions -> "hybrid"
-- 25 mark questions -> "levels_based"
-- Any other value   -> "points_based"
+marking_style rules — infer from the question's mark allocation and command words:
+- Questions with AO point lists                        -> "points_based"
+- Questions with KAA + Evaluation level bands          -> "hybrid"
+- Questions with full level descriptor bands only      -> "levels_based"
+- When uncertain, use "points_based" as default
 
 Return ONLY the JSON array. No explanation, no markdown, no extra text.
 
@@ -117,51 +136,61 @@ EXAM PAPER TEXT:
         section       = q_info["section"]
 
         if marking_style == "points_based":
-            if total_marks == 5:
-                breakdown = '{"knowledge": 2, "application": 2, "analysis": 1, "evaluation": 0, "total": 5}'
-            elif total_marks == 8:
-                breakdown = '{"knowledge": 2, "application": 2, "analysis": 2, "evaluation": 2, "total": 8}'
-            else:
-                breakdown = f'{{"knowledge": 0, "application": 0, "analysis": 0, "evaluation": 0, "total": {total_marks}}}'
+            breakdown_instruction = """
+    mark_breakdown: extract the actual AO allocation stated in the mark scheme or question.
+    Look for explicit AO labels (AO1, AO2, AO3, AO4) or Knowledge/Application/Analysis/Evaluation labels.
+    Return as {"knowledge": N, "application": N, "analysis": N, "evaluation": N, "total": N}.
+    If not explicitly stated, distribute evenly and set "inferred": true."""
+
         elif marking_style == "hybrid":
-            breakdown = '{"kaa_max": 8, "evaluation_max": 4, "total": 12}'
-        else:
-            breakdown = '{"kaa_max": 16, "evaluation_max": 9, "total": 25}'
+            breakdown_instruction = """
+    mark_breakdown: look for explicit KAA and Evaluation split stated in the question or mark scheme.
+    Return as {"kaa_max": N, "evaluation_max": N, "total": N}.
+    If not stated, use {"kaa_max": null, "evaluation_max": null, "total": TOTAL, "inferred": true}."""
+
+        else:  # levels_based
+            breakdown_instruction = """
+    mark_breakdown: look for explicit KAA and Evaluation split stated in the question or mark scheme.
+    Return as {"kaa_max": N, "evaluation_max": N, "total": N}.
+    If not stated, use {"kaa_max": null, "evaluation_max": null, "total": TOTAL, "inferred": true}."""
 
         return f"""You are extracting question data from a Pearson Edexcel A Level Economics exam paper.
 
-Extract question {simple_id.upper()} ONLY and return a single JSON object with exactly these fields:
-{{
-  "simple_id": "{simple_id}",
-  "question_number": "e.g. 1(a)",
-  "section": "{section}",
-  "question_text": "full question text exactly as written",
-  "question_type": "short_answer",
-  "total_marks": {total_marks},
-  "marking_style": "{marking_style}",
-  "mark_breakdown": {breakdown},
-  "requires_diagram": false,
-  "requires_calculation": false,
-  "is_optional": false,
-  "optional_group": null,
-  "context_references": {{"figures": [], "extracts": [], "tables": [], "explicit": false}},
-  "topic": "Microeconomics",
-  "subtopic": "most relevant economic concept"
-}}
+    Extract question {simple_id.upper()} ONLY and return a single JSON object with exactly these fields:
+    {{
+    "simple_id":             "{simple_id}",
+    "question_number":       "e.g. 1(a)",
+    "section":               "{section}",
+    "question_text":         "full question text exactly as written",
+    "question_type":         "short_answer | essay | calculation | diagram_required | choice",
+    "total_marks":           {total_marks},
+    "marking_style":         "{marking_style}",
+    "mark_breakdown":        {{}},
+    "requires_diagram":      false,
+    "requires_calculation":  false,
+    "is_optional":           false,
+    "optional_group":        null,
+    "context_references":    {{"figures": [], "extracts": [], "tables": [], "explicit": false}},
+    "topic":                 "Microeconomics | Macroeconomics | Microeconomics and Macroeconomics",
+    "subtopic":              "most relevant economic concept"
+    }}
 
-Rules:
-- question_type: one of "short_answer", "essay", "calculation", "diagram_required", "choice"
-- requires_diagram: true if question explicitly asks student to draw a diagram
-- requires_calculation: true if question requires a numerical calculation
-- is_optional: true if part of an EITHER/OR choice
-- optional_group: e.g. "1d_or_1e" if is_optional, otherwise null
-- context_references: list any Figures, Extracts or Tables mentioned in the question text
-- topic: "Microeconomics", "Macroeconomics", or "Microeconomics and Macroeconomics"
-- Return ONLY the JSON object. No explanation, no markdown, no extra text.
+    Mark breakdown instruction:
+    {breakdown_instruction}
 
-EXAM PAPER TEXT:
-{text}
-"""
+    Rules:
+    - question_type: one of "short_answer", "essay", "calculation", "diagram_required", "choice"
+    - requires_diagram: true only if question explicitly asks student to draw a diagram
+    - requires_calculation: true if question requires a numerical calculation
+    - is_optional: true if part of an EITHER/OR choice
+    - optional_group: e.g. "1d_or_1e" if is_optional, otherwise null
+    - context_references: list any Figures, Extracts or Tables mentioned in the question text
+    - Return ONLY the JSON object. No explanation, no markdown, no extra text.
+
+    EXAM PAPER TEXT:
+    {text}
+    """
+    
 
     # ── Stage 3: Scheme Extraction ────────────────────────────────────────────
 

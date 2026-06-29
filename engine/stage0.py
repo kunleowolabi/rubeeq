@@ -88,6 +88,7 @@ def select_profile(characterisation: dict) -> ExamProfile:
     for profile in PROFILES:
         try:
             if profile.can_handle(signal):
+                profile.set_characterisation(characterisation)
                 return profile
         except Exception:
             continue
@@ -100,30 +101,28 @@ def select_profile(characterisation: dict) -> ExamProfile:
 def run_stage0(text: str, anthropic_client) -> tuple:
     """
     Full Stage 0: characterise then select profile.
-
-    Returns:
-        (characterisation dict, ExamProfile instance)
-
-    Never raises — worst case returns GenericProfile with low confidence.
+    Returns: (characterisation dict, ExamProfile instance)
+    Never raises.
     """
     try:
         characterisation = characterise_paper(text, anthropic_client)
     except Exception as e:
-        # If Claude call itself fails, use a minimal characterisation
         characterisation = {
-            "exam_board":          "Unknown",
-            "subject":             "Unknown",
-            "level":               "Unknown",
-            "question_format":     "unknown",
-            "has_marking_schemes": True,
-            "marking_style":       "unknown",
+            "exam_board":           "Unknown",
+            "subject":              "Unknown",
+            "level":                "Unknown",
+            "question_format":      "unknown",
+            "has_marking_schemes":  True,
+            "marking_style":        "unknown",
             "numbering_convention": "unknown",
-            "sections":            [],
-            "year":                None,
-            "paper_code":          None,
-            "confidence":          "low",
-            "notes":               f"Stage 0 characterisation failed: {e}",
+            "sections":             [],
+            "year":                 None,
+            "paper_code":           None,
+            "confidence":           "low",
+            "notes":                f"Stage 0 characterisation failed: {e}",
         }
 
     profile = select_profile(characterisation)
+    # Always ensure the profile has the characterisation set
+    profile.set_characterisation(characterisation)
     return characterisation, profile

@@ -49,8 +49,18 @@ class JAMBProfile(ExamProfile):
     # ── Stage 1: Paper Metadata ───────────────────────────────────────────────
 
     def metadata_prompt(self, text: str) -> str:
-        return f"""You are extracting structured metadata from a JAMB UTME exam paper PDF.
+        char  = self.get_characterisation()
+        hints = ""
+        if char:
+            hints = f"""
+Prior characterisation:
+- Subject : {char.get('subject', 'unknown')}
+- Year    : {char.get('year', 'unknown')}
+- Notes   : {char.get('notes', 'none')}
+"""
 
+        return f"""You are extracting structured metadata from a JAMB UTME exam paper PDF.
+{hints}
 Extract the metadata and return a single JSON object with exactly these fields:
 {{
   "paper_code":             "e.g. JAMB-UTME-2023-ECONOMICS",
@@ -69,8 +79,6 @@ Rules:
 - paper_code: construct as JAMB-UTME-{{YEAR}}-{{SUBJECT}} if not explicitly stated.
 - total_marks: JAMB awards 1 mark per question. total_marks = total_questions.
 - total_questions: count of MCQ questions in the paper. Default 60 if not stated.
-- time_allowed_minutes: extract if stated, otherwise null.
-- exam_date: use YYYY-MM-DD format. Use null if not found.
 - Return ONLY the JSON object. No explanation, no markdown, no extra text.
 
 PDF TEXT:

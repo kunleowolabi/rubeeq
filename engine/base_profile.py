@@ -193,5 +193,19 @@ class ExamProfile(ABC):
                 text = text[4:]
         return json.loads(text.strip())
 
+    # ── Characterisation (set by pipeline after Stage 0) ──────────────────────
+
+    def set_characterisation(self, characterisation: dict):
+        """
+        Called by the pipeline after Stage 0 to pass the Claude-derived
+        characterisation into the profile. Profiles can use this to make
+        prompts more context-aware. Default stores it; override to act on it.
+        """
+        self._characterisation = characterisation
+
+    def get_characterisation(self) -> dict:
+        """Return the characterisation dict, or empty dict if not set."""
+        return getattr(self, "_characterisation", {})
+
     def __repr__(self) -> str:
         return f"<ExamProfile: {self.display_name}>"
