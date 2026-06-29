@@ -1,5 +1,5 @@
 """
-app.py — Exam PDF Extraction Engine — Admin Portal
+app.py — Rubeeq Extraction Engine — Admin Portal
 Two-page Dash application:
     Page 1 /upload  — upload question + scheme PDFs, view upload history
     Page 2 /records — view all processed extraction jobs
@@ -10,419 +10,408 @@ from dash import dcc, html, dash_table, Input, Output, State, callback, no_updat
 import dash_bootstrap_components as dbc
 import requests
 import os
+import threading
 from datetime import datetime
 from decouple import config as env
 
 API_BASE = env("API_BASE_URL", default="http://localhost:8000")
 API_KEY  = env("ADMIN_API_KEY", default="")
+HEADERS  = {"X-API-Key": API_KEY}
 
-HEADERS = {"X-API-Key": API_KEY}
-
-# ── Colour tokens ─────────────────────────────────────────────────────────────
-
-NAVY    = "#0A0F2C"
-INK     = "#111827"
-PAPER   = "#F5F4EF"
-MIST    = "#E8E6DF"
-ACCENT  = "#C8A96E"        # warm gold
-ACCENT2 = "#4A6FA5"        # steel blue
-SUCCESS = "#2D6A4F"
-WARNING = "#B5640A"
-ERROR   = "#8B1A1A"
-WHITE   = "#FFFFFF"
-
-FONT_DISPLAY = "'DM Serif Display', Georgia, serif"
-FONT_BODY    = "'DM Mono', 'Courier New', monospace"
+# ── Fonts & external ──────────────────────────────────────────────────────────
 
 EXTERNAL_STYLESHEETS = [
     dbc.themes.BOOTSTRAP,
-    "https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@300;400;500&display=swap",
+    "https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600&display=swap",
 ]
 
-app = dash.Dash(
-    __name__,
-    external_stylesheets=EXTERNAL_STYLESHEETS,
-    suppress_callback_exceptions=True,
-    use_pages=False,
-)
-app.title = "Extraction Engine"
-server = app.server
+# ── Colour tokens ─────────────────────────────────────────────────────────────
 
-# ── Shared styles ─────────────────────────────────────────────────────────────
+BG       = "#0A0F1E"       # deep navy — sidebar/background
+SURFACE  = "#F7F6F2"       # warm off-white — floating card
+INK      = "#0A0F1E"       # text on surface
+MUTED    = "#9098A8"       # secondary text
+BORDER   = "#E4E2DC"       # card borders
+ACCENT   = "#0A0F1E"       # buttons — same as BG for monochrome feel
+WHITE    = "#FFFFFF"
+SUCCESS  = "#2A6049"
+WARNING  = "#8A5C00"
+ERROR    = "#7A1F1F"
+RUNNING  = "#1A4A7A"
 
-PAGE_STYLE = {
-    "backgroundColor": PAPER,
-    "minHeight":       "100vh",
-    "fontFamily":      FONT_BODY,
-    "color":           INK,
+FONT = "Raleway, sans-serif"
+
+# ── Global styles ─────────────────────────────────────────────────────────────
+
+ROOT_STYLE = {
+    "fontFamily": FONT,
+    "height":     "100vh",
+    "overflow":   "hidden",
+    "backgroundColor": BG,
 }
 
 SIDEBAR_STYLE = {
-    "position":        "fixed",
-    "top":             0,
-    "left":            0,
-    "bottom":          0,
-    "width":           "220px",
-    "backgroundColor": NAVY,
-    "padding":         "2rem 1.5rem",
-    "zIndex":          1000,
+    "position":   "fixed",
+    "top":        0,
+    "left":       0,
+    "bottom":     0,
+    "width":      "200px",
+    "padding":    "2rem 1.5rem",
+    "display":    "flex",
+    "flexDirection": "column",
+    "justifyContent": "space-between",
+    "zIndex":     100,
 }
 
-CONTENT_STYLE = {
-    "marginLeft": "220px",
-    "padding":    "2.5rem 3rem",
-    "minHeight":  "100vh",
+MAIN_STYLE = {
+    "marginLeft":    "200px",
+    "height":        "100vh",
+    "padding":       "1.25rem 1.25rem 1.25rem 0",
+    "boxSizing":     "border-box",
 }
 
 CARD_STYLE = {
+    "backgroundColor": SURFACE,
+    "borderRadius":    "16px",
+    "height":          "100%",
+    "overflowY":       "auto",
+    "padding":         "2.5rem 3rem",
+    "boxSizing":       "border-box",
+}
+
+SECTION_CARD = {
     "backgroundColor": WHITE,
-    "borderRadius":    "2px",
-    "border":          f"1px solid {MIST}",
-    "padding":         "2rem",
-    "marginBottom":    "1.5rem",
-    "boxShadow":       "0 1px 3px rgba(0,0,0,0.06)",
+    "borderRadius":    "10px",
+    "border":          f"1px solid {BORDER}",
+    "padding":         "1.75rem 2rem",
+    "marginBottom":    "1.25rem",
+}
+
+LABEL_STYLE = {
+    "fontSize":      "0.68rem",
+    "fontWeight":    "600",
+    "letterSpacing": "0.12em",
+    "textTransform": "uppercase",
+    "color":         MUTED,
+    "marginBottom":  "0.5rem",
+    "display":       "block",
+    "fontFamily":    FONT,
 }
 
 HEADING_STYLE = {
-    "fontFamily": FONT_DISPLAY,
-    "color":      NAVY,
-    "fontWeight": "normal",
-    "letterSpacing": "-0.5px",
+    "fontFamily":  FONT,
+    "fontWeight":  "600",
+    "color":       INK,
+    "fontSize":    "1.4rem",
+    "marginBottom": "0.2rem",
+    "letterSpacing": "-0.3px",
 }
 
-NAV_LINK_STYLE = {
-    "display":         "block",
-    "color":           "#8A9BB5",
-    "textDecoration":  "none",
-    "fontFamily":      FONT_BODY,
-    "fontSize":        "0.78rem",
-    "letterSpacing":   "0.12em",
-    "textTransform":   "uppercase",
-    "padding":         "0.6rem 0",
-    "borderLeft":      "2px solid transparent",
-    "paddingLeft":     "0.75rem",
-    "marginBottom":    "0.25rem",
-    "transition":      "all 0.15s ease",
+SUBHEADING_STYLE = {
+    "fontFamily":  FONT,
+    "fontWeight":  "500",
+    "color":       INK,
+    "fontSize":    "0.95rem",
+    "marginBottom": "1.25rem",
 }
 
-NAV_LINK_ACTIVE = {
-    **NAV_LINK_STYLE,
-    "color":       ACCENT,
-    "borderLeft":  f"2px solid {ACCENT}",
-}
-
-BTN_PRIMARY = {
-    "backgroundColor": NAVY,
+BTN_STYLE = {
+    "backgroundColor": BG,
     "color":           WHITE,
     "border":          "none",
-    "borderRadius":    "2px",
-    "fontFamily":      FONT_BODY,
+    "borderRadius":    "6px",
+    "fontFamily":      FONT,
+    "fontWeight":      "500",
     "fontSize":        "0.78rem",
-    "letterSpacing":   "0.1em",
-    "textTransform":   "uppercase",
-    "padding":         "0.65rem 1.75rem",
+    "letterSpacing":   "0.08em",
+    "padding":         "0.6rem 1.5rem",
     "cursor":          "pointer",
+    "textTransform":   "uppercase",
 }
+
+NAV_BASE = {
+    "display":       "block",
+    "fontFamily":    FONT,
+    "fontSize":      "0.75rem",
+    "fontWeight":    "500",
+    "letterSpacing": "0.1em",
+    "textTransform": "uppercase",
+    "textDecoration": "none",
+    "padding":       "0.5rem 0.75rem",
+    "borderRadius":  "6px",
+    "marginBottom":  "0.25rem",
+    "transition":    "all 0.15s",
+}
+
+NAV_INACTIVE = {**NAV_BASE, "color": "rgba(255,255,255,0.45)"}
+NAV_ACTIVE   = {**NAV_BASE, "color": WHITE, "backgroundColor": "rgba(255,255,255,0.1)"}
 
 TABLE_STYLE = {
-    "fontFamily":  FONT_BODY,
-    "fontSize":    "0.8rem",
-    "color":       INK,
+    "fontFamily": FONT,
+    "fontSize":   "0.78rem",
+    "color":      INK,
 }
 
-TABLE_HEADER_STYLE = [{
-    "backgroundColor": NAVY,
-    "color":           ACCENT,
-    "fontWeight":      "500",
-    "letterSpacing":   "0.08em",
+TABLE_HEADER = {
+    "backgroundColor": SURFACE,
+    "color":           MUTED,
+    "fontWeight":      "600",
+    "fontSize":        "0.65rem",
+    "letterSpacing":   "0.12em",
     "textTransform":   "uppercase",
-    "fontSize":        "0.72rem",
     "border":          "none",
-    "padding":         "0.75rem 1rem",
-}]
-
-TABLE_CELL_STYLE = [{
-    "padding":         "0.65rem 1rem",
-    "borderBottom":    f"1px solid {MIST}",
-    "backgroundColor": WHITE,
-}]
-
-TABLE_FILTER_STYLE = {
-    "backgroundColor": PAPER,
-    "border":          f"1px solid {MIST}",
-    "borderRadius":    "2px",
-    "color":           INK,
-    "fontFamily":      FONT_BODY,
-    "fontSize":        "0.78rem",
-    "padding":         "0.4rem 0.6rem",
+    "borderBottom":    f"1px solid {BORDER}",
+    "padding":         "0.6rem 0.75rem",
 }
+
+TABLE_CELL = {
+    "border":          "none",
+    "borderBottom":    f"1px solid {BORDER}",
+    "padding":         "0.65rem 0.75rem",
+    "backgroundColor": WHITE,
+}
+
+# ── Logo SVG (icon only — logo1.svg adapted inline) ───────────────────────────
+
+
+LOGO_ICON = html.Img(
+    src="/assets/logo1.svg",
+    style={"width": "40px", "height": "40px", "filter": "brightness(0) invert(1)"}
+)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
-def sidebar(active_page: str):
-    links = [
+def sidebar(active: str):
+    nav_items = [
         ("/upload",  "Upload"),
         ("/records", "Records"),
     ]
-    items = []
-    for href, label in links:
-        style = NAV_LINK_ACTIVE if active_page == href else NAV_LINK_STYLE
-        items.append(
-            html.A(label, href=href, style=style)
-        )
-
     return html.Div([
+        # Top — logo + nav
         html.Div([
-            html.Div("⬡", style={
-                "color":        ACCENT,
-                "fontSize":     "1.5rem",
-                "marginBottom": "0.25rem",
-            }),
-            html.Div("Extraction", style={
-                "color":        WHITE,
-                "fontFamily":   FONT_DISPLAY,
-                "fontSize":     "1.1rem",
-                "fontWeight":   "normal",
-                "letterSpacing": "-0.3px",
-            }),
-            html.Div("Engine", style={
-                "color":        ACCENT,
-                "fontFamily":   FONT_DISPLAY,
-                "fontSize":     "1.1rem",
-                "fontWeight":   "normal",
-                "marginBottom": "2.5rem",
-            }),
+            html.Div([
+                LOGO_ICON,
+                html.Span("Rubeeq", style={
+                    "color":       WHITE,
+                    "fontFamily":  FONT,
+                    "fontWeight":  "600",
+                    "fontSize":    "1rem",
+                    "marginLeft":  "0.6rem",
+                    "letterSpacing": "-0.2px",
+                }),
+            ], style={"display": "flex", "alignItems": "center", "marginBottom": "2.5rem"}),
+
+            html.Div([
+                html.A(label, href=href,
+                       style=NAV_ACTIVE if active == href else NAV_INACTIVE)
+                for href, label in nav_items
+            ]),
         ]),
-        html.Div([
-            html.Div("Navigation", style={
-                "color":         "#4A5568",
-                "fontSize":      "0.65rem",
-                "letterSpacing": "0.15em",
-                "textTransform": "uppercase",
-                "marginBottom":  "0.75rem",
-                "fontFamily":    FONT_BODY,
-            }),
-            *items,
-        ]),
-        html.Div([
-            html.Div(style={
-                "height":          "1px",
-                "backgroundColor": "#1E2A4A",
-                "marginBottom":    "1rem",
-            }),
-            html.Div("v1.0.0", style={
-                "color":    "#4A5568",
-                "fontSize": "0.7rem",
-                "fontFamily": FONT_BODY,
-            }),
-        ], style={
-            "position": "absolute",
-            "bottom":   "1.5rem",
-            "left":     "1.5rem",
-            "right":    "1.5rem",
+
+        # Bottom — version
+        html.Div("v1.0.0", style={
+            "color":      "rgba(255,255,255,0.25)",
+            "fontSize":   "0.68rem",
+            "fontFamily": FONT,
+            "letterSpacing": "0.05em",
         }),
     ], style=SIDEBAR_STYLE)
 
-# ── Status badge helper ───────────────────────────────────────────────────────
-def status_badge(status: str) -> str:
-    """Return emoji prefix for status strings in tables."""
+
+# ── Status helpers ────────────────────────────────────────────────────────────
+
+STATUS_COLORS = {
+    "complete": SUCCESS,
+    "partial":  WARNING,
+    "failed":   ERROR,
+    "running":  RUNNING,
+    "pending":  MUTED,
+}
+
+def status_dot(status: str) -> str:
     s = (status or "").lower()
-    if s == "complete":   return f"● {status}"
-    if s == "partial":    return f"◐ {status}"
-    if s == "failed":     return f"○ {status}"
-    if s == "running":    return f"◌ {status}"
-    return status
+    dot = {"complete": "●", "partial": "◐", "failed": "○", "running": "◌"}.get(s, "·")
+    return f"{dot} {status}"
+
+
+def _fmt_dt(iso_str):
+    if not iso_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%d %b %Y %H:%M")
+    except Exception:
+        return iso_str
+
+
+# ── Page shell ────────────────────────────────────────────────────────────────
+
+def page_shell(active: str, content):
+    return html.Div([
+        sidebar(active),
+        html.Div([
+            html.Div(content, style=CARD_STYLE),
+        ], style=MAIN_STYLE),
+    ], style=ROOT_STYLE)
+
+
+# ── Upload zone component ─────────────────────────────────────────────────────
+
+def upload_zone(upload_id, label, optional=False):
+    return html.Div([
+        html.Span(label + (" (optional)" if optional else ""), style=LABEL_STYLE),
+        dcc.Upload(
+            id=upload_id,
+            children=html.Div([
+                html.Div("↑", style={
+                    "fontSize":    "1.3rem",
+                    "color":       MUTED,
+                    "marginBottom": "0.4rem",
+                }),
+                html.Div("Drop or click to browse",
+                         style={"fontSize": "0.78rem", "color": MUTED}),
+                html.Div("PDF only", style={
+                    "fontSize":  "0.68rem",
+                    "color":     BORDER,
+                    "marginTop": "0.2rem",
+                }),
+            ], style={"textAlign": "center", "padding": "1.5rem 0"}),
+            style={
+                "border":          f"1.5px dashed {BORDER}",
+                "borderRadius":    "8px",
+                "cursor":          "pointer",
+                "backgroundColor": SURFACE,
+            },
+            accept=".pdf",
+        ),
+    ])
 
 
 # ── PAGE 1: UPLOAD ────────────────────────────────────────────────────────────
 
 def layout_upload():
-    return html.Div([
-        sidebar("/upload"),
+    content = html.Div([
+
+        # Page header
         html.Div([
+            html.H2("Upload", style=HEADING_STYLE),
+            html.P("Submit exam papers for extraction.",
+                   style={"color": MUTED, "fontSize": "0.82rem",
+                          "marginBottom": "1.75rem", "fontFamily": FONT}),
+        ]),
 
-            # Page heading
+        # Upload section
+        html.Div([
+            html.H4("Documents", style=SUBHEADING_STYLE),
+            dbc.Row([
+                dbc.Col(upload_zone("upload-questions", "Questions PDF"), md=6),
+                dbc.Col(upload_zone("upload-scheme", "Marking Scheme", optional=True), md=6),
+            ], style={"marginBottom": "1rem"}),
+
+            # Filename confirmations
+            dbc.Row([
+                dbc.Col(html.Div(id="questions-filename", style={
+                    "fontSize": "0.73rem", "color": SUCCESS,
+                    "fontFamily": FONT, "minHeight": "1.2rem",
+                }), md=6),
+                dbc.Col(html.Div(id="scheme-filename", style={
+                    "fontSize": "0.73rem", "color": SUCCESS,
+                    "fontFamily": FONT, "minHeight": "1.2rem",
+                }), md=6),
+            ], style={"marginBottom": "1.25rem"}),
+
             html.Div([
-                html.H2("Upload Papers", style={**HEADING_STYLE, "fontSize": "1.9rem", "marginBottom": "0.25rem"}),
-                html.P("Submit question papers and marking schemes for extraction.",
-                       style={"color": "#6B7280", "fontSize": "0.82rem", "marginBottom": "2rem"}),
-            ]),
+                html.Button("Upload & Extract", id="btn-upload",
+                            n_clicks=0, style=BTN_STYLE),
+                html.Span(id="upload-status", style={
+                    "marginLeft": "1rem",
+                    "fontSize":   "0.75rem",
+                    "fontFamily": FONT,
+                    "color":      MUTED,
+                }),
+            ], style={"display": "flex", "alignItems": "center"}),
 
-            # ── Upload card ───────────────────────────────────────────────────
-            html.Div([
-                html.Div([
-                    html.Div("01", style={
-                        "fontFamily":    FONT_DISPLAY,
-                        "fontSize":      "0.75rem",
-                        "color":         ACCENT,
-                        "letterSpacing": "0.1em",
-                        "marginBottom":  "0.25rem",
-                    }),
-                    html.H4("Submit Documents", style={
-                        **HEADING_STYLE,
-                        "fontSize":     "1.2rem",
-                        "marginBottom": "1.5rem",
-                    }),
-                ]),
+            dcc.Store(id="store-questions"),
+            dcc.Store(id="store-scheme"),
 
-                dbc.Row([
-                    # Questions PDF
-                    dbc.Col([
-                        html.Label("Questions PDF", style={
-                            "fontSize":      "0.72rem",
-                            "letterSpacing": "0.1em",
-                            "textTransform": "uppercase",
-                            "color":         "#6B7280",
-                            "marginBottom":  "0.5rem",
-                            "display":       "block",
-                        }),
-                        dcc.Upload(
-                            id="upload-questions",
-                            children=html.Div([
-                                html.Div("↑", style={"fontSize": "1.5rem", "color": ACCENT2, "marginBottom": "0.5rem"}),
-                                html.Div("Drop file or click to browse", style={"fontSize": "0.8rem", "color": "#6B7280"}),
-                                html.Div("PDF only", style={"fontSize": "0.7rem", "color": "#9CA3AF", "marginTop": "0.25rem"}),
-                            ], style={"textAlign": "center"}),
-                            style={
-                                "border":        f"1.5px dashed {MIST}",
-                                "borderRadius":  "2px",
-                                "padding":       "2rem 1rem",
-                                "cursor":        "pointer",
-                                "backgroundColor": PAPER,
-                                "transition":    "border-color 0.2s",
-                            },
-                            accept=".pdf",
-                        ),
-                        html.Div(id="questions-filename", style={
-                            "fontSize":   "0.75rem",
-                            "color":      SUCCESS,
-                            "marginTop":  "0.5rem",
-                            "fontFamily": FONT_BODY,
-                        }),
-                    ], md=6),
+        ], style=SECTION_CARD),
 
-                    # Marking scheme PDF
-                    dbc.Col([
-                        html.Label("Marking Scheme PDF", style={
-                            "fontSize":      "0.72rem",
-                            "letterSpacing": "0.1em",
-                            "textTransform": "uppercase",
-                            "color":         "#6B7280",
-                            "marginBottom":  "0.5rem",
-                            "display":       "block",
-                        }),
-                        dcc.Upload(
-                            id="upload-scheme",
-                            children=html.Div([
-                                html.Div("↑", style={"fontSize": "1.5rem", "color": ACCENT2, "marginBottom": "0.5rem"}),
-                                html.Div("Drop file or click to browse", style={"fontSize": "0.8rem", "color": "#6B7280"}),
-                                html.Div("Optional — PDF only", style={"fontSize": "0.7rem", "color": "#9CA3AF", "marginTop": "0.25rem"}),
-                            ], style={"textAlign": "center"}),
-                            style={
-                                "border":        f"1.5px dashed {MIST}",
-                                "borderRadius":  "2px",
-                                "padding":       "2rem 1rem",
-                                "cursor":        "pointer",
-                                "backgroundColor": PAPER,
-                            },
-                            accept=".pdf",
-                        ),
-                        html.Div(id="scheme-filename", style={
-                            "fontSize":   "0.75rem",
-                            "color":      SUCCESS,
-                            "marginTop":  "0.5rem",
-                            "fontFamily": FONT_BODY,
-                        }),
-                    ], md=6),
-                ], style={"marginBottom": "1.75rem"}),
+        # History section
+        html.Div([
+            html.H4("Recent Uploads", style=SUBHEADING_STYLE),
+            html.Div(id="upload-history-table"),
+            dcc.Interval(id="history-refresh", interval=15_000, n_intervals=0),
+        ], style=SECTION_CARD),
 
-                html.Div([
-                    html.Button("Upload & Extract", id="btn-upload", n_clicks=0, style=BTN_PRIMARY),
-                    html.Span(id="upload-status", style={
-                        "marginLeft": "1.25rem",
-                        "fontSize":   "0.78rem",
-                        "fontFamily": FONT_BODY,
-                    }),
-                ], style={"display": "flex", "alignItems": "center"}),
-
-                # Hidden stores for file content
-                dcc.Store(id="store-questions"),
-                dcc.Store(id="store-scheme"),
-
-            ], style=CARD_STYLE),
-
-            # ── Previous uploads card ─────────────────────────────────────────
-            html.Div([
-                html.Div([
-                    html.Div("02", style={
-                        "fontFamily":    FONT_DISPLAY,
-                        "fontSize":      "0.75rem",
-                        "color":         ACCENT,
-                        "letterSpacing": "0.1em",
-                        "marginBottom":  "0.25rem",
-                    }),
-                    html.H4("Upload History", style={
-                        **HEADING_STYLE,
-                        "fontSize":     "1.2rem",
-                        "marginBottom": "1.25rem",
-                    }),
-                ]),
-
-                html.Div(id="upload-history-table", children=[
-                    html.P("Loading history...", style={"color": "#9CA3AF", "fontSize": "0.8rem"})
-                ]),
-
-                dcc.Interval(id="history-refresh", interval=15_000, n_intervals=0),
-
-            ], style=CARD_STYLE),
-
-        ], style=CONTENT_STYLE),
-    ], style=PAGE_STYLE)
+    ])
+    return page_shell("/upload", content)
 
 
 # ── PAGE 2: RECORDS ───────────────────────────────────────────────────────────
 
 def layout_records():
-    return html.Div([
-        sidebar("/records"),
+    content = html.Div([
+
         html.Div([
+            html.H2("Records", style=HEADING_STYLE),
+            html.P("All extraction jobs and their outputs.",
+                   style={"color": MUTED, "fontSize": "0.82rem",
+                          "marginBottom": "1.75rem", "fontFamily": FONT}),
+        ]),
 
-            html.Div([
-                html.H2("Processed Records", style={**HEADING_STYLE, "fontSize": "1.9rem", "marginBottom": "0.25rem"}),
-                html.P("All extraction jobs and their outputs.",
-                       style={"color": "#6B7280", "fontSize": "0.82rem", "marginBottom": "2rem"}),
-            ]),
+        # Stats row
+        html.Div(id="records-stats", style={"marginBottom": "1.25rem"}),
 
-            # Stats strip
-            html.Div(id="records-stats", style={"marginBottom": "1.5rem"}),
+        # Table section
+        html.Div([
+            html.H4("All Jobs", style=SUBHEADING_STYLE),
+            html.Div(id="records-table"),
+            dcc.Interval(id="records-refresh", interval=20_000, n_intervals=0),
+        ], style=SECTION_CARD),
 
-            # Records card
-            html.Div([
-                html.Div([
-                    html.Div("01", style={
-                        "fontFamily":    FONT_DISPLAY,
-                        "fontSize":      "0.75rem",
-                        "color":         ACCENT,
-                        "letterSpacing": "0.1em",
-                        "marginBottom":  "0.25rem",
-                    }),
-                    html.H4("All Jobs", style={
-                        **HEADING_STYLE,
-                        "fontSize":     "1.2rem",
-                        "marginBottom": "1.25rem",
-                    }),
-                ]),
-                html.Div(id="records-table", children=[
-                    html.P("Loading records...", style={"color": "#9CA3AF", "fontSize": "0.8rem"})
-                ]),
-                dcc.Interval(id="records-refresh", interval=20_000, n_intervals=0),
-            ], style=CARD_STYLE),
-
-        ], style=CONTENT_STYLE),
-    ], style=PAGE_STYLE)
+    ])
+    return page_shell("/records", content)
 
 
-# ── Router ────────────────────────────────────────────────────────────────────
+# ── App ───────────────────────────────────────────────────────────────────────
+
+app = dash.Dash(
+    __name__,
+    external_stylesheets=EXTERNAL_STYLESHEETS,
+    suppress_callback_exceptions=True,
+    title="Rubeeq",
+)
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        <link rel="icon" type="image/svg+xml" href="/assets/logo1.svg?v=3" sizes="96x96">
+        {%css%}
+        <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body { overflow: hidden; background: ''' + BG + '''; }
+            ::-webkit-scrollbar { width: 4px; }
+            ::-webkit-scrollbar-track { background: transparent; }
+            ::-webkit-scrollbar-thumb { background: ''' + BORDER + '''; border-radius: 2px; }
+            .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td,
+            .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th {
+                font-family: Raleway, sans-serif !important;
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+server = app.server
 
 app.layout = html.Div([
     dcc.Location(id="url", refresh=False),
@@ -430,18 +419,18 @@ app.layout = html.Div([
 ])
 
 
+# ── Router ────────────────────────────────────────────────────────────────────
+
 @callback(Output("page-content", "children"), Input("url", "pathname"))
 def display_page(pathname):
     if pathname in ("/", "/upload"):
         return layout_upload()
     if pathname == "/records":
         return layout_records()
-    return html.Div([
-        sidebar("/"),
-        html.Div([
-            html.H2("404 — Page not found", style=HEADING_STYLE),
-        ], style=CONTENT_STYLE),
-    ], style=PAGE_STYLE)
+    return page_shell("/", html.Div([
+        html.H2("404", style=HEADING_STYLE),
+        html.P("Page not found.", style={"color": MUTED, "fontFamily": FONT}),
+    ]))
 
 
 # ── Upload callbacks ──────────────────────────────────────────────────────────
@@ -454,7 +443,7 @@ def display_page(pathname):
     prevent_initial_call=True,
 )
 def store_questions(contents, filename):
-    if contents is None:
+    if not contents:
         return "", None
     return f"✓ {filename}", {"contents": contents, "filename": filename}
 
@@ -467,7 +456,7 @@ def store_questions(contents, filename):
     prevent_initial_call=True,
 )
 def store_scheme(contents, filename):
-    if contents is None:
+    if not contents:
         return "", None
     return f"✓ {filename}", {"contents": contents, "filename": filename}
 
@@ -475,28 +464,28 @@ def store_scheme(contents, filename):
 @callback(
     Output("upload-status", "children"),
     Output("upload-status", "style"),
-    Input("btn-upload",     "n_clicks"),
+    Input("btn-upload",      "n_clicks"),
     State("store-questions", "data"),
     State("store-scheme",    "data"),
     prevent_initial_call=True,
 )
 def run_upload(n_clicks, q_data, s_data):
-    if not q_data:
-        return "Please select a questions PDF first.", {
-            "marginLeft": "1.25rem", "fontSize": "0.78rem",
-            "color": ERROR, "fontFamily": FONT_BODY,
-        }
+    base_style = {
+        "marginLeft": "1rem",
+        "fontSize":   "0.75rem",
+        "fontFamily": FONT,
+    }
 
-    def decode_upload(data):
-        """Strip data URL prefix and return raw bytes."""
+    if not q_data:
+        return "Select a questions PDF first.", {**base_style, "color": ERROR}
+
+    def decode(data):
         import base64
-        content_string = data["contents"]
-        content_type, content_b64 = content_string.split(",", 1)
-        return base64.b64decode(content_b64), data["filename"]
+        _, b64 = data["contents"].split(",", 1)
+        return base64.b64decode(b64), data["filename"]
 
     try:
-        # Upload questions PDF
-        q_bytes, q_name = decode_upload(q_data)
+        q_bytes, q_name = decode(q_data)
         resp = requests.post(
             f"{API_BASE}/api/upload",
             headers=HEADERS,
@@ -507,10 +496,9 @@ def run_upload(n_clicks, q_data, s_data):
         resp.raise_for_status()
         q_path = resp.json()["storage_path"]
 
-        # Upload scheme PDF if provided
         s_path = None
         if s_data:
-            s_bytes, s_name = decode_upload(s_data)
+            s_bytes, s_name = decode(s_data)
             resp = requests.post(
                 f"{API_BASE}/api/upload",
                 headers=HEADERS,
@@ -521,14 +509,9 @@ def run_upload(n_clicks, q_data, s_data):
             resp.raise_for_status()
             s_path = resp.json()["storage_path"]
 
-        # Trigger extraction in background — pipeline runs server-side
-        # We don't consume the SSE stream from the portal; status is
-        # tracked via the jobs table and polled by the history table.
         payload = {"questions_path": q_path}
         if s_path:
             payload["scheme_path"] = s_path
-
-        import threading
 
         def _fire():
             try:
@@ -537,31 +520,22 @@ def run_upload(n_clicks, q_data, s_data):
                     headers={**HEADERS, "Accept": "text/event-stream"},
                     json=payload,
                     stream=True,
-                    timeout=600,  # 10 min ceiling for large papers
-                ) as resp:
-                    for line in resp.iter_lines():
-                        pass  # drain the stream so server completes
+                    timeout=600,
+                ) as r:
+                    for _ in r.iter_lines():
+                        pass
             except Exception:
                 pass
 
         threading.Thread(target=_fire, daemon=True).start()
 
-    except requests.exceptions.Timeout:
-        # Extraction started — timeout is expected for SSE
-        pass
     except Exception as e:
-        return f"Error: {str(e)}", {
-            "marginLeft": "1.25rem", "fontSize": "0.78rem",
-            "color": ERROR, "fontFamily": FONT_BODY,
-        }
+        return f"Error: {e}", {**base_style, "color": ERROR}
 
-    return "✓ Uploaded — extraction running in background.", {
-        "marginLeft": "1.25rem", "fontSize": "0.78rem",
-        "color": SUCCESS, "fontFamily": FONT_BODY,
-    }
+    return "Uploaded — extraction running.", {**base_style, "color": SUCCESS}
 
 
-# ── Upload history table ──────────────────────────────────────────────────────
+# ── History table ─────────────────────────────────────────────────────────────
 
 @callback(
     Output("upload-history-table", "children"),
@@ -572,51 +546,44 @@ def refresh_history(n, pathname):
     if pathname not in ("/", "/upload"):
         return no_update
     try:
-        resp = requests.get(
-            f"{API_BASE}/api/jobs",
-            headers=HEADERS,
-            params={"limit": 20},
-            timeout=10,
-        )
+        resp = requests.get(f"{API_BASE}/api/jobs", headers=HEADERS,
+                            params={"limit": 20}, timeout=10)
         resp.raise_for_status()
         jobs = resp.json().get("jobs", [])
     except Exception:
-        return html.P("Could not load history — is the API running?",
-                      style={"color": ERROR, "fontSize": "0.8rem"})
+        return html.P("API unavailable.", style={
+            "color": ERROR, "fontSize": "0.78rem", "fontFamily": FONT
+        })
 
     if not jobs:
-        return html.P("No uploads yet.", style={"color": "#9CA3AF", "fontSize": "0.8rem"})
+        return html.P("No uploads yet.", style={
+            "color": MUTED, "fontSize": "0.78rem", "fontFamily": FONT
+        })
 
     rows = [{
-        "Job ID":       j.get("id", "")[:8] + "…",
-        "Questions":    j.get("questions_pdf_path", "—").split("/")[-1],
-        "Scheme":       (j.get("scheme_pdf_path") or "—").split("/")[-1],
-        "Exam Type":    j.get("exam_type") or "—",
-        "Status":       status_badge(j.get("status", "—")),
-        "Pages":        j.get("total_pages", "—"),
-        "Submitted":    _fmt_dt(j.get("created_at")),
+        "Job":       j.get("id", "")[:8] + "…",
+        "Questions": (j.get("questions_pdf_path") or "").split("/")[-1],
+        "Scheme":    ((j.get("scheme_pdf_path") or "") or "—").split("/")[-1],
+        "Type":      j.get("exam_type") or "—",
+        "Status":    status_dot(j.get("status", "—")),
+        "Pages":     j.get("total_pages") or "—",
+        "Submitted": _fmt_dt(j.get("created_at")),
     } for j in jobs]
 
     return dash_table.DataTable(
         data=rows,
-        columns=[{"name": c, "id": c} for c in rows[0].keys()],
+        columns=[{"name": c, "id": c} for c in rows[0]],
         style_table={"overflowX": "auto"},
-        style_header_conditional=TABLE_HEADER_STYLE,
-        style_data_conditional=TABLE_CELL_STYLE,
-        style_cell={**TABLE_STYLE, "textAlign": "left", "border": "none"},
-        style_header={
-            "backgroundColor": NAVY,
-            "color":           ACCENT,
-            "fontWeight":      "500",
-            "letterSpacing":   "0.08em",
-            "textTransform":   "uppercase",
-            "fontSize":        "0.72rem",
-            "border":          "none",
-        },
-        page_size=10,
-        filter_action="native",
+        style_cell={**TABLE_STYLE, "textAlign": "left", "border": "none",
+                    "padding": "0.6rem 0.75rem"},
+        style_header=TABLE_HEADER,
+        style_data=TABLE_CELL,
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "backgroundColor": SURFACE},
+        ],
+        page_size=8,
         sort_action="native",
-        style_filter=TABLE_FILTER_STYLE,
+        style_as_list_view=True,
     )
 
 
@@ -633,122 +600,102 @@ def refresh_records(n, pathname):
         return no_update, no_update
 
     try:
-        resp = requests.get(
-            f"{API_BASE}/api/jobs",
-            headers=HEADERS,
-            params={"limit": 200},
-            timeout=10,
-        )
+        resp = requests.get(f"{API_BASE}/api/jobs", headers=HEADERS,
+                            params={"limit": 200}, timeout=10)
         resp.raise_for_status()
         jobs = resp.json().get("jobs", [])
     except Exception:
         return (
-            html.P("Could not load records — is the API running?",
-                   style={"color": ERROR, "fontSize": "0.8rem"}),
+            html.P("API unavailable.", style={
+                "color": ERROR, "fontSize": "0.78rem", "fontFamily": FONT
+            }),
             no_update,
         )
 
-    # Stats strip
     total    = len(jobs)
     complete = sum(1 for j in jobs if j.get("status") == "complete")
-    partial  = sum(1 for j in jobs if j.get("status") == "partial")
     failed   = sum(1 for j in jobs if j.get("status") == "failed")
     total_q  = sum(j.get("questions_extracted", 0) for j in jobs)
 
-    def stat_card(label, value, color=NAVY):
+    def stat(label, value, color=INK):
         return html.Div([
             html.Div(str(value), style={
-                "fontFamily": FONT_DISPLAY,
-                "fontSize":   "2rem",
-                "color":      color,
-                "lineHeight": "1",
+                "fontFamily":  FONT,
+                "fontWeight":  "600",
+                "fontSize":    "1.6rem",
+                "color":       color,
+                "lineHeight":  "1",
             }),
             html.Div(label, style={
-                "fontSize":      "0.7rem",
+                "fontFamily":    FONT,
+                "fontSize":      "0.65rem",
+                "fontWeight":    "600",
                 "letterSpacing": "0.1em",
                 "textTransform": "uppercase",
-                "color":         "#6B7280",
-                "marginTop":     "0.25rem",
+                "color":         MUTED,
+                "marginTop":     "0.2rem",
             }),
         ], style={
-            **CARD_STYLE,
-            "padding":       "1.25rem 1.5rem",
-            "marginBottom":  "0",
-            "display":       "inline-block",
-            "marginRight":   "1rem",
-            "minWidth":      "120px",
-            "textAlign":     "center",
+            "backgroundColor": WHITE,
+            "border":          f"1px solid {BORDER}",
+            "borderRadius":    "8px",
+            "padding":         "1rem 1.25rem",
+            "marginRight":     "0.75rem",
+            "minWidth":        "100px",
+            "display":         "inline-block",
         })
 
     stats = html.Div([
-        stat_card("Total Jobs",  total),
-        stat_card("Complete",    complete, SUCCESS),
-        stat_card("Partial",     partial,  WARNING),
-        stat_card("Failed",      failed,   ERROR),
-        stat_card("Questions",   total_q,  ACCENT2),
-    ], style={"marginBottom": "1.5rem"})
+        stat("Total",     total),
+        stat("Complete",  complete, SUCCESS),
+        stat("Failed",    failed,   ERROR),
+        stat("Questions", total_q,  RUNNING),
+    ])
 
     if not jobs:
-        return html.P("No records yet.", style={"color": "#9CA3AF", "fontSize": "0.8rem"}), stats
+        return html.P("No records yet.", style={
+            "color": MUTED, "fontSize": "0.78rem", "fontFamily": FONT
+        }), stats
 
     rows = [{
-        "Job ID":       j.get("id", "")[:8] + "…",
-        "Exam Type":    j.get("exam_type") or "—",
-        "Status":       status_badge(j.get("status", "—")),
-        "Questions":    j.get("questions_extracted", 0),
-        "Schemes":      j.get("schemes_extracted", 0),
-        "Native Pages": j.get("native_pages", 0),
-        "Image Pages":  j.get("image_pages", 0),
-        "Total Pages":  j.get("total_pages", 0),
-        "Started":      _fmt_dt(j.get("started_at")),
-        "Completed":    _fmt_dt(j.get("completed_at")),
-        "Error":        (j.get("error_message") or "")[:60] or "—",
+        "Job":       j.get("id", "")[:8] + "…",
+        "Type":      j.get("exam_type") or "—",
+        "Status":    status_dot(j.get("status", "—")),
+        "Questions": j.get("questions_extracted", 0),
+        "Schemes":   j.get("schemes_extracted",   0),
+        "Pages":     j.get("total_pages",         0),
+        "Started":   _fmt_dt(j.get("started_at")),
+        "Completed": _fmt_dt(j.get("completed_at")),
+        "Error":     (j.get("error_message") or "—")[:50],
     } for j in jobs]
 
     table = dash_table.DataTable(
         data=rows,
-        columns=[{"name": c, "id": c} for c in rows[0].keys()],
+        columns=[{"name": c, "id": c} for c in rows[0]],
         style_table={"overflowX": "auto"},
-        style_cell={**TABLE_STYLE, "textAlign": "left", "border": "none", "minWidth": "80px"},
-        style_header={
-            "backgroundColor": NAVY,
-            "color":           ACCENT,
-            "fontWeight":      "500",
-            "letterSpacing":   "0.08em",
-            "textTransform":   "uppercase",
-            "fontSize":        "0.72rem",
-            "border":          "none",
-        },
+        style_cell={**TABLE_STYLE, "textAlign": "left",
+                    "border": "none", "padding": "0.6rem 0.75rem",
+                    "minWidth": "70px"},
+        style_header=TABLE_HEADER,
+        style_data=TABLE_CELL,
         style_data_conditional=[
             {"if": {"filter_query": '{Status} contains "complete"'},
              "color": SUCCESS},
-            {"if": {"filter_query": '{Status} contains "partial"'},
-             "color": WARNING},
             {"if": {"filter_query": '{Status} contains "failed"'},
              "color": ERROR},
+            {"if": {"filter_query": '{Status} contains "running"'},
+             "color": RUNNING},
             {"if": {"row_index": "odd"},
-             "backgroundColor": PAPER},
+             "backgroundColor": SURFACE},
         ],
-        page_size=20,
-        filter_action="native",
+        page_size=15,
         sort_action="native",
-        style_filter=TABLE_FILTER_STYLE,
+        filter_action="native",
         export_format="csv",
+        style_as_list_view=True,
     )
 
     return table, stats
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _fmt_dt(iso_str: str) -> str:
-    if not iso_str:
-        return "—"
-    try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return dt.strftime("%d %b %Y %H:%M")
-    except Exception:
-        return iso_str
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
