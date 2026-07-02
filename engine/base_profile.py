@@ -1,3 +1,4 @@
+# Copyright (c) 2025 Rubeeq. All rights reserved. See LICENSE for terms.
 """
 engine/base_profile.py — Abstract base class for all exam profiles.
 

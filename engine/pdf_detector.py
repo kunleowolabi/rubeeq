@@ -16,7 +16,7 @@ import pdfplumber
 NATIVE_CHAR_THRESHOLD = 100
 
 
-def detect_pdf_type(pdf_path: str) -> dict:
+def detect_pdf_type(pdf_path: str, max_pages: int = None) -> dict:
     """
     Classify every page in the PDF as 'native' or 'image'.
 
@@ -26,11 +26,15 @@ def detect_pdf_type(pdf_path: str) -> dict:
         'native' — all pages are native
         'image'  — all pages are image-based
         'mixed'  — combination of both
+
+    max_pages — if set, only classify the first N pages (used by /api/estimate
+    to avoid downloading and processing the full PDF for a pre-flight check).
     """
     page_types = {}
 
     with pdfplumber.open(pdf_path) as pdf:
-        for i, page in enumerate(pdf.pages, start=1):
+        pages = pdf.pages[:max_pages] if max_pages else pdf.pages
+        for i, page in enumerate(pages, start=1):
             text = page.extract_text() or ""
             char_count = len(text.strip())
             page_types[i] = "native" if char_count >= NATIVE_CHAR_THRESHOLD else "image"

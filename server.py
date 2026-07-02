@@ -1,3 +1,4 @@
+# Copyright (c) 2025 Rubeeq. All rights reserved. See LICENSE for terms.
 """
 server.py — FastAPI server for the Exam PDF Extraction Engine (Product A).
 
@@ -38,7 +39,10 @@ import json
 import os
 from pathlib import PurePosixPath
 
-from fastapi import FastAPI, HTTPException, Header, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Header, Depends, UploadFile, File, Form, Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
@@ -51,6 +55,7 @@ from extractor_platform.models import ProcessingJob
 from extractor_platform.job_tracker import JobTracker
 from extractor_platform.billing import BillingManager, InsufficientCreditsError
 
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 from decouple import config as env
@@ -62,15 +67,66 @@ PDF_BUCKET_NAME   = env("PDF_BUCKET_NAME",   default="exam-pdfs")
 ARTIFACTS_BUCKET  = env("ARTIFACTS_BUCKET",  default="extraction-artifacts")
 ADMIN_SECRET      = env("ADMIN_SECRET",      default="change-me")
 ALLOWED_ORIGINS   = env("ALLOWED_ORIGINS",   default="http://localhost:5173").split(",")
+ENV               = env("ENV",               default="development")
 
-from supabase import create_client
-import anthropic as anthropic_sdk
+# ── Limits ────────────────────────────────────────────────────────────────────
 
-supabase  = create_client(SUPABASE_URL, SUPABASE_KEY)
-anthropic = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
+MAX_UPLOAD_BYTES   = 50 * 1024 * 1024   # 50 MB per file
+ESTIMATE_MAX_PAGES = 3                   # sample only first N pages for detection
 
-tracker = JobTracker(supabase)
-billing = BillingManager(supabase)
+# ── Startup validation ────────────────────────────────────────────────────────
+
+def _validate_config():
+    errors = []
+    if ENV == "production":
+        if ADMIN_SECRET == "change-me":
+            errors.append(
+                "ADMIN_SECRET is set to the default value 'change-me'. "
+                "Set a strong secret before running in production."
+            )
+        if not SUPABASE_URL or "placeholder" in SUPABASE_URL.lower():
+            errors.append("SUPABASE_URL appears to be unset or a placeholder.")
+        if not SUPABASE_KEY or "placeholder" in SUPABASE_KEY.lower():
+            errors.append("SUPABASE_KEY appears to be unset or a placeholder.")
+        if not ANTHROPIC_API_KEY or "placeholder" in ANTHROPIC_API_KEY.lower():
+            errors.append("ANTHROPIC_API_KEY appears to be unset or a placeholder.")
+    if errors:
+        raise RuntimeError(
+            "\n\nStartup config validation failed:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+            + "\n\nFix the above issues before starting in production.\n"
+        )
+
+_validate_config()
+ENV               = env("ENV",               default="development")
+ENV               = env("ENV",               default="development")
+
+# ── Startup validation ────────────────────────────────────────────────────────
+
+def _validate_config():
+    errors = []
+
+    if ENV == "production":
+        if ADMIN_SECRET == "change-me":
+            errors.append(
+                "ADMIN_SECRET is set to the default value 'change-me'. "
+                "Set a strong secret before running in production."
+            )
+        if not SUPABASE_URL or "placeholder" in SUPABASE_URL.lower():
+            errors.append("SUPABASE_URL appears to be unset or a placeholder.")
+        if not SUPABASE_KEY or "placeholder" in SUPABASE_KEY.lower():
+            errors.append("SUPABASE_KEY appears to be unset or a placeholder.")
+        if not ANTHROPIC_API_KEY or "placeholder" in ANTHROPIC_API_KEY.lower():
+            errors.append("ANTHROPIC_API_KEY appears to be unset or a placeholder.")
+
+    if errors:
+        raise RuntimeError(
+            "\n\nStartup config validation failed:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+            + "\n\nFix the above issues before starting in production.\n"
+        )
+
+_validate_config()
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
@@ -79,6 +135,10 @@ app = FastAPI(
     description="Extract structured question data from any exam PDF.",
     version="1.0.0",
 )
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -171,7 +231,9 @@ def get_profiles():
 
 
 @app.post("/api/upload")
+@limiter.limit("30/minute")
 async def upload_pdf(
+    request: Request,
     file:   UploadFile = File(...),
     folder: str        = Form(...),
     user:   dict       = Depends(get_current_user),
@@ -195,6 +257,12 @@ async def upload_pdf(
     storage_path = _user_path(user["id"], folder, file.filename)
     contents     = await file.read()
 
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024*1024)} MB."
+        )
+
     loop = asyncio.get_event_loop()
 
     def _upload():
@@ -215,7 +283,9 @@ async def upload_pdf(
 
 
 @app.post("/api/estimate")
+@limiter.limit("30/minute")
 async def estimate(
+    request: Request,
     req:  EstimateRequest,
     user: dict = Depends(get_current_user),
 ):
@@ -289,7 +359,9 @@ async def estimate(
 
 
 @app.post("/api/extract")
+@limiter.limit("10/minute")
 async def extract(
+    request: Request,
     req:  ExtractRequest,
     user: dict = Depends(get_current_user),
 ):
@@ -330,6 +402,27 @@ async def extract(
             "job_id":  job_id,
         })}
 
+        # Reserve credits atomically before any work starts
+        estimated_cost = 0.0
+        try:
+            q_det = detect_pdf_type(req.questions_path)
+            est   = billing.estimate_cost(
+                native_pages=sum(1 for t in q_det["pages"].values() if t == "native"),
+                image_pages=sum(1 for t in q_det["pages"].values() if t == "image"),
+                tier=user["tier"],
+            )
+            estimated_cost = est["total_cost"]
+            await loop.run_in_executor(
+                _executor,
+                lambda: billing.reserve_credits(user["id"], estimated_cost)
+            )
+        except InsufficientCreditsError as e:
+            await loop.run_in_executor(_executor, lambda: tracker.fail_job(job_id, str(e)))
+            yield {"data": json.dumps({"message": str(e), "level": "error"})}
+            yield {"data": json.dumps({"message": "__done__", "level": "done",
+                                       "job_id": job_id, "result": {"status": "failed"}})}
+            return
+
         def _download_to_tmp():
             """Download PDFs from Supabase storage to local temp files."""
             import tempfile
@@ -365,27 +458,17 @@ async def extract(
         pipeline_result = {}
 
         def _run():
-            import engine.pipeline as ep
-            original_log = ep.PipelineLogger.log
+            def _log_callback(entry: dict):
+                loop.call_soon_threadsafe(log_queue.put_nowait, entry)
 
-            def patched_log(self_inner, message, level="info"):
-                original_log(self_inner, message, level)
-                loop.call_soon_threadsafe(
-                    log_queue.put_nowait,
-                    {"message": message, "level": level}
-                )
-
-            ep.PipelineLogger.log = patched_log
-            try:
-                result = run_pipeline(
-                    questions_path=q_local,
-                    scheme_path=s_local,
-                    anthropic_client=anthropic,
-                )
-                pipeline_result.update(result)
-                return result
-            finally:
-                ep.PipelineLogger.log = original_log
+            result = run_pipeline(
+                questions_path=q_local,
+                scheme_path=s_local,
+                anthropic_client=anthropic,
+                log_callback=_log_callback,
+            )
+            pipeline_result.update(result)
+            return result
 
         future = loop.run_in_executor(_executor, _run)
 
@@ -426,19 +509,31 @@ async def extract(
                     )
                 )
 
+            # Reconcile reserved credits against actual cost
+            billing_snapshot = result.get("billing", {})
+            actual_cost = billing.estimate_cost(
+                native_pages=billing_snapshot.get("total_native", 0),
+                image_pages=billing_snapshot.get("total_image",  0),
+                tier=user["tier"],
+            )["total_cost"]
+
+            await loop.run_in_executor(
+                _executor,
+                lambda: billing.reconcile_credits(
+                    api_user_id=user["id"],
+                    reserved_amount=estimated_cost,
+                    actual_amount=actual_cost,
+                )
+            )
+
             billing_event = await loop.run_in_executor(
                 _executor,
                 lambda: billing.record_billing_event(
                     job_id=job_id,
                     api_user_id=user["id"],
-                    pipeline_billing=result.get("billing", {}),
+                    pipeline_billing=billing_snapshot,
                     tier=user["tier"],
                 )
-            )
-
-            await loop.run_in_executor(
-                _executor,
-                lambda: billing.deduct_credits(user["id"], billing_event.total_cost)
             )
 
         except InsufficientCreditsError as e:

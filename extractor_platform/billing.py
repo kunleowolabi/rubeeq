@@ -170,11 +170,50 @@ class BillingManager:
         )
         return float(result.data.get("credit_balance", 0.0))
 
+    def reserve_credits(self, api_user_id: str, amount: float) -> float:
+        """
+        Atomically reserve credits at job start using a Supabase RPC function
+        with row-level locking. Prevents concurrent jobs from overdrawing
+        the same balance (check-then-act race condition).
+
+        Returns the new balance after reservation.
+        Raises InsufficientCreditsError if balance is insufficient.
+        """
+        try:
+            result = self.db.rpc("reserve_credits", {
+                "p_user_id": api_user_id,
+                "p_amount":  round(amount, 4),
+            }).execute()
+            return float(result.data)
+        except Exception as e:
+            if "Insufficient credits" in str(e):
+                raise InsufficientCreditsError(
+                    f"Insufficient credits to start job. Required: ${amount:.4f}"
+                )
+            raise
+
+    def reconcile_credits(
+        self,
+        api_user_id: str,
+        reserved_amount: float,
+        actual_amount: float,
+    ) -> float:
+        """
+        Reconcile reserved credits against actual cost after pipeline completes.
+        Refunds the difference if actual < reserved.
+        Charges the shortfall if actual > reserved.
+        """
+        result = self.db.rpc("reconcile_credits", {
+            "p_user_id":  api_user_id,
+            "p_reserved": round(reserved_amount, 4),
+            "p_actual":   round(actual_amount, 4),
+        }).execute()
+        return float(result.data)
+
     def deduct_credits(self, api_user_id: str, amount: float) -> float:
         """
-        Deduct amount from user's credit balance.
-        Returns the new balance.
-        Raises InsufficientCreditsError if balance would go below zero.
+        Legacy direct deduction — use reserve_credits() + reconcile_credits()
+        for new code. Kept for backwards compatibility with admin tooling.
         """
         current = self.get_balance(api_user_id)
         if current < amount:

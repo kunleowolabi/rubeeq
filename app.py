@@ -515,15 +515,16 @@ def run_upload(n_clicks, q_data, s_data):
 
         def _fire():
             try:
-                with requests.post(
+                # Fire extraction as a non-streaming POST.
+                # Portal tracks status via polling — SSE kept for API customers only.
+                requests.post(
                     f"{API_BASE}/api/extract",
-                    headers={**HEADERS, "Accept": "text/event-stream"},
+                    headers=HEADERS,
                     json=payload,
-                    stream=True,
-                    timeout=600,
-                ) as r:
-                    for _ in r.iter_lines():
-                        pass
+                    timeout=5,
+                )
+            except requests.exceptions.Timeout:
+                pass  # Expected — pipeline runs async server-side
             except Exception:
                 pass
 

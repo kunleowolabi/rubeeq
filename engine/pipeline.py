@@ -1,3 +1,4 @@
+# Copyright (c) 2025 Rubeeq. All rights reserved. See LICENSE for terms.
 """
 engine/pipeline.py — Main orchestrator for the extraction pipeline.
 
@@ -39,6 +40,13 @@ from engine.vision_extractor import (
 )
 from engine.output_generator import OutputGenerator
 from engine.profile_registry import UnknownExamTypeError
+from engine.schemas import (
+    validate_paper,
+    validate_question_list,
+    validate_question,
+    validate_scheme,
+    ExtractionValidationError,
+)
 from engine.stage0 import run_stage0
 
 # ─────────────────────────────────────────────
@@ -52,8 +60,15 @@ class PipelineLogger:
     Also prints to terminal for CLI use.
     """
 
-    def __init__(self):
-        self.logs = []
+    def __init__(self, log_callback=None):
+        """
+        log_callback — optional callable(entry: dict) invoked on every log.
+        Each job gets its own logger instance so concurrent jobs never
+        cross-wire their log streams.
+        """
+        self.logs      = []
+        self._callback = log_callback
+
 
     def log(self, message: str, level: str = "info"):
         entry = {"message": message, "level": level}
@@ -65,6 +80,8 @@ class PipelineLogger:
             "error":   "✗ ",
         }.get(level, "  ")
         print(f"{prefix}{message}")
+        if self._callback:
+            self._callback(entry)
 
     def stage(self, title: str):
         line = "─" * 50
@@ -175,7 +192,8 @@ def stage_1_extract_paper(
         messages=[{"role": "user", "content": prompt}]
     )
 
-    paper = profile.parse_claude_json(response.content[0].text)
+    raw   = profile.parse_claude_json(response.content[0].text)
+    paper = validate_paper(raw)
     paper["question_pdf_path"] = questions_path
     paper["scheme_pdf_path"]   = scheme_path or ""
 
@@ -212,7 +230,8 @@ def stage_2_extract_questions(
         max_tokens=1000,
         messages=[{"role": "user", "content": discover_prompt}]
     )
-    question_list = profile.parse_claude_json(response.content[0].text)
+    raw           = profile.parse_claude_json(response.content[0].text)
+    question_list = validate_question_list(raw)
     logger.log(f"Discovered {len(question_list)} questions")
 
     # Pass 2 — extract full details one question at a time
@@ -228,7 +247,8 @@ def stage_2_extract_questions(
                 max_tokens=1000,
                 messages=[{"role": "user", "content": extract_prompt}]
             )
-            question = profile.parse_claude_json(response.content[0].text)
+            raw      = profile.parse_claude_json(response.content[0].text)
+            question = validate_question(raw)
             questions.append(question)
             logger.log(
                 f"Extracted {simple_id} ({q_info.get('total_marks')} marks)",
@@ -363,7 +383,8 @@ def stage_3_extract_schemes(
                 max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}]
             )
-            scheme = profile.parse_claude_json(response.content[0].text)
+            raw    = profile.parse_claude_json(response.content[0].text)
+            scheme = validate_scheme(raw)
             schemes.append(scheme)
             logger.log(f"Extracted scheme {simple_id}", "success")
         except Exception as e:
@@ -464,6 +485,7 @@ def run_pipeline(
     questions_path: str,
     scheme_path: str | None,
     anthropic_client,
+    log_callback=None,
 ) -> dict:
     """
     Run the full extraction pipeline for one paper.
@@ -486,7 +508,7 @@ def run_pipeline(
         "error":         None | "error message",
     }
     """
-    logger = PipelineLogger()
+    logger = PipelineLogger(log_callback=log_callback)
     result = {
         "status":         "failed",
         "profile":        None,
