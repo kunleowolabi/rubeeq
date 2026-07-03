@@ -1,4 +1,3 @@
-# Copyright (c) 2025 Rubeeq. All rights reserved. See LICENSE for terms.
 """
 server.py — FastAPI server for the Exam PDF Extraction Engine (Product A).
 
@@ -49,6 +48,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from engine.pipeline import run_pipeline
+from engine.schemas import ExtractionValidationError
 from engine.profile_registry import list_profiles
 from engine.pdf_detector import detect_pdf_type
 from extractor_platform.models import ProcessingJob
@@ -98,35 +98,16 @@ def _validate_config():
         )
 
 _validate_config()
-ENV               = env("ENV",               default="development")
-ENV               = env("ENV",               default="development")
 
-# ── Startup validation ────────────────────────────────────────────────────────
+from supabase import create_client
+import anthropic as anthropic_sdk
 
-def _validate_config():
-    errors = []
+supabase  = create_client(SUPABASE_URL, SUPABASE_KEY)
+anthropic = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    if ENV == "production":
-        if ADMIN_SECRET == "change-me":
-            errors.append(
-                "ADMIN_SECRET is set to the default value 'change-me'. "
-                "Set a strong secret before running in production."
-            )
-        if not SUPABASE_URL or "placeholder" in SUPABASE_URL.lower():
-            errors.append("SUPABASE_URL appears to be unset or a placeholder.")
-        if not SUPABASE_KEY or "placeholder" in SUPABASE_KEY.lower():
-            errors.append("SUPABASE_KEY appears to be unset or a placeholder.")
-        if not ANTHROPIC_API_KEY or "placeholder" in ANTHROPIC_API_KEY.lower():
-            errors.append("ANTHROPIC_API_KEY appears to be unset or a placeholder.")
+tracker = JobTracker(supabase)
+billing = BillingManager(supabase)
 
-    if errors:
-        raise RuntimeError(
-            "\n\nStartup config validation failed:\n"
-            + "\n".join(f"  - {e}" for e in errors)
-            + "\n\nFix the above issues before starting in production.\n"
-        )
-
-_validate_config()
 
 # ── App ───────────────────────────────────────────────────────────────────────
 

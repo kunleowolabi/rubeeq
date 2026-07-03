@@ -47,6 +47,13 @@ from engine.schemas import (
     validate_scheme,
     ExtractionValidationError,
 )
+from engine.schemas import (
+    validate_paper,
+    validate_question_list,
+    validate_question,
+    validate_scheme,
+    ExtractionValidationError,
+)
 from engine.stage0 import run_stage0
 
 # ─────────────────────────────────────────────
